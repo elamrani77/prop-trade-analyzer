@@ -724,46 +724,129 @@ export default function App() {
 
           {/* Trade Ideas breakdown */}
           {a.maxRisk && a.tradeIdeas.some(i => i.status !== "safe") && <>
-            <div style={{ fontSize: 15, fontWeight: 700, margin: "20px 0 6px" }}>⚠️ Flagged Trade Ideas</div>
-            <div style={{ fontSize: 11, color: C.textDim, marginBottom: 12, lineHeight: 1.5 }}>
-              All positions on the same instrument + direction, closed within 10 minutes = 1 trade idea. Max risk = {fmt$(a.maxRisk)}.
+            <div style={{ fontSize: 15, fontWeight: 700, margin: "20px 0 6px" }}>⚠️ Flagged Trade Ideas ({a.tradeIdeas.filter(i => i.status !== "safe").length})</div>
+            <div style={{ fontSize: 11, color: C.textDim, marginBottom: 12, lineHeight: 1.6 }}>
+              IF treats all positions on the same instrument + direction, closed within <b style={{ color: C.text }}>10 minutes</b> of each other, as <b style={{ color: C.text }}>one trade idea</b>.
+              Combined risk (Entry→SL × total lots × 100) must stay under <b style={{ color: C.amber }}>{fmt$(a.maxRisk)}</b>.
             </div>
 
             {a.tradeIdeas.filter(i => i.status !== "safe").sort((a, b) => a.maxSl - b.maxSl).map((idea, idx) => {
               const statusColors = { "breach": C.red, "breach-zone": C.red, "critical": C.red, "danger": C.amber, "tight": C.blue };
               const statusLabels = { "breach": "LIKELY BREACH", "breach-zone": "BREACH ZONE", "critical": "SL CRITICAL", "danger": "DANGER", "tight": "TIGHT" };
               const sc = statusColors[idea.status] || C.textDim;
+              const riskPct = a.maxRisk ? Math.min((idea.simRisk / a.maxRisk) * 100, 150) : 0;
+              const lotsPct = a.maxRisk ? (idea.lots * 100 * idea.maxSl) / a.maxRisk * 100 : 0;
+
+              const reasonText = idea.status === "breach"
+                ? `Combined realized risk of ${fmt$(idea.simRisk)} exceeds the ${fmt$(a.maxRisk)} limit.`
+                : idea.n > 1
+                  ? `${idea.n} trades in the same direction within ${idea.duration < 60 ? idea.duration.toFixed(0) + "s" : (idea.duration/60).toFixed(1) + "min"}. Combined ${idea.lots.toFixed(2)} lots = only ${idea.maxSl.toFixed(1)}pts of SL room before hitting ${fmt$(a.maxRisk)}.`
+                  : `Single trade at ${idea.lots.toFixed(2)} lots = only ${idea.maxSl.toFixed(1)}pts of SL room. Gold easily moves this much.`;
+
               return (
-                <div key={idx} style={{ ...s.card, marginBottom: 8, padding: 0, overflow: "hidden", borderColor: idea.status.includes("breach") ? "rgba(239,68,68,0.3)" : idea.status === "critical" ? "rgba(239,68,68,0.2)" : idea.status === "danger" ? "rgba(245,158,11,0.25)" : C.border }}>
-                  <div style={{ padding: "10px 14px", display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, borderBottom: `1px solid ${C.border}` }}>
-                    <span style={{ padding: "2px 8px", borderRadius: 8, fontSize: 9, fontWeight: 700, background: sc + "18", color: sc }}>{statusLabels[idea.status]}</span>
-                    <span style={{ fontSize: 12, fontWeight: 700 }}>{new Date(idea.date).toLocaleDateString("en-GB", { month: "short", day: "numeric" })} {new Date(idea.date).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}</span>
-                    <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: idea.dir === "BUY" ? C.greenBg : C.redBg, color: idea.dir === "BUY" ? C.green : C.red, fontWeight: 700 }}>{idea.dir}</span>
-                    <span style={{ fontSize: 11, color: C.textDim }}>{idea.n} trades · {idea.lots.toFixed(2)} lots</span>
-                    <span style={{ fontSize: 11, color: C.textDim, ...s.mono }}>SL room: {idea.maxSl.toFixed(1)}pts</span>
-                    <span style={{ fontSize: 11, color: C.textDim, ...s.mono }}>Risk: {fmt$(idea.simRisk)}</span>
-                    <span style={{ fontSize: 12, fontWeight: 700, ...s.mono, color: idea.pnl >= 0 ? C.green : C.red, marginLeft: "auto" }}>{fmt$(idea.pnl)}</span>
+                <div key={idx} style={{ ...s.card, marginBottom: 12, padding: 0, overflow: "hidden", borderColor: idea.status.includes("breach") ? "rgba(239,68,68,0.35)" : idea.status === "critical" ? "rgba(239,68,68,0.25)" : idea.status === "danger" ? "rgba(245,158,11,0.3)" : C.border }}>
+                  {/* Header */}
+                  <div style={{ padding: "12px 14px", borderBottom: `1px solid ${C.border}` }}>
+                    <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                      <span style={{ padding: "2px 10px", borderRadius: 8, fontSize: 10, fontWeight: 700, background: sc + "18", color: sc }}>{statusLabels[idea.status]}</span>
+                      <span style={{ fontSize: 13, fontWeight: 700 }}>
+                        {new Date(idea.date).toLocaleDateString("en-GB", { weekday: "short", month: "short", day: "numeric" })}{" "}
+                        {new Date(idea.date).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                      </span>
+                      <span style={{ fontSize: 13, fontWeight: 700, ...s.mono, color: idea.pnl >= 0 ? C.green : C.red, marginLeft: "auto" }}>{fmt$(idea.pnl)}</span>
+                    </div>
+
+                    {/* Stats row */}
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(100px, 1fr))", gap: 8, marginBottom: 10 }}>
+                      <div style={{ background: C.bg, borderRadius: 6, padding: "6px 10px" }}>
+                        <div style={{ fontSize: 9, color: C.textMuted, textTransform: "uppercase", letterSpacing: 0.5 }}>Direction</div>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: idea.dir === "BUY" ? C.green : C.red }}>{idea.dir}</div>
+                      </div>
+                      <div style={{ background: C.bg, borderRadius: 6, padding: "6px 10px" }}>
+                        <div style={{ fontSize: 9, color: C.textMuted, textTransform: "uppercase", letterSpacing: 0.5 }}>Trades</div>
+                        <div style={{ fontSize: 13, fontWeight: 700, ...s.mono }}>{idea.n}</div>
+                      </div>
+                      <div style={{ background: C.bg, borderRadius: 6, padding: "6px 10px" }}>
+                        <div style={{ fontSize: 9, color: C.textMuted, textTransform: "uppercase", letterSpacing: 0.5 }}>Total lots</div>
+                        <div style={{ fontSize: 13, fontWeight: 700, ...s.mono }}>{idea.lots.toFixed(2)}</div>
+                      </div>
+                      <div style={{ background: C.bg, borderRadius: 6, padding: "6px 10px" }}>
+                        <div style={{ fontSize: 9, color: C.textMuted, textTransform: "uppercase", letterSpacing: 0.5 }}>Max SL room</div>
+                        <div style={{ fontSize: 13, fontWeight: 700, ...s.mono, color: idea.maxSl <= 20 ? C.red : idea.maxSl <= 33 ? C.amber : C.text }}>{idea.maxSl.toFixed(1)} pts</div>
+                      </div>
+                      <div style={{ background: C.bg, borderRadius: 6, padding: "6px 10px" }}>
+                        <div style={{ fontSize: 9, color: C.textMuted, textTransform: "uppercase", letterSpacing: 0.5 }}>Duration</div>
+                        <div style={{ fontSize: 13, fontWeight: 700, ...s.mono }}>{idea.duration < 60 ? idea.duration.toFixed(0) + "s" : (idea.duration / 60).toFixed(1) + "m"}</div>
+                      </div>
+                      <div style={{ background: C.bg, borderRadius: 6, padding: "6px 10px" }}>
+                        <div style={{ fontSize: 9, color: C.textMuted, textTransform: "uppercase", letterSpacing: 0.5 }}>Sim. risk</div>
+                        <div style={{ fontSize: 13, fontWeight: 700, ...s.mono, color: idea.simRisk > (a.maxRisk || 500) ? C.red : C.amber }}>{fmt$(idea.simRisk)}</div>
+                      </div>
+                    </div>
+
+                    {/* Risk bar */}
+                    <div style={{ marginBottom: 6 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, marginBottom: 3 }}>
+                        <span style={{ color: C.textDim }}>Risk vs {fmt$(a.maxRisk)} limit</span>
+                        <span style={{ color: riskPct > 100 ? C.red : riskPct > 70 ? C.amber : C.green, fontWeight: 700, ...s.mono }}>{Math.min(riskPct, 999).toFixed(0)}%</span>
+                      </div>
+                      <div style={{ height: 6, background: C.border, borderRadius: 3, overflow: "hidden" }}>
+                        <div style={{ height: "100%", width: Math.min(riskPct, 100) + "%", background: riskPct > 100 ? C.red : riskPct > 70 ? C.amber : C.green, borderRadius: 3, transition: "width 0.5s" }} />
+                      </div>
+                    </div>
+
+                    {/* Explanation */}
+                    <div style={{ fontSize: 11, color: C.textDim, lineHeight: 1.5, padding: "8px 10px", background: (idea.status.includes("breach") ? C.redBg : idea.status === "danger" ? C.amberBg : C.blueBg), borderRadius: 6 }}>
+                      <b style={{ color: sc }}>Why flagged:</b> {reasonText}
+                    </div>
                   </div>
+
+                  {/* Trades table */}
                   <div style={{ overflowX: "auto" }}>
                     <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
-                      <thead><tr style={{ borderBottom: `1px solid ${C.border}` }}>
-                        {["Time", "Dir", "Lots", "Entry", "Close", "Move", "P&L"].map(h =>
-                          <th key={h} style={{ padding: "5px 10px", textAlign: ["Time", "Dir"].includes(h) ? "left" : "right", color: C.textDim, fontSize: 9, fontWeight: 600, textTransform: "uppercase" }}>{h}</th>
+                      <thead><tr style={{ borderBottom: `1px solid ${C.border}`, background: C.bg }}>
+                        {["#", "Closed at", "Dir", "Lots", "Entry", "Close", "Move (pts)", "Risk ($)", "P&L", "Gap"].map(h =>
+                          <th key={h} style={{ padding: "6px 10px", textAlign: ["#", "Closed at", "Dir", "Gap"].includes(h) ? "left" : "right", color: C.textDim, fontSize: 9, fontWeight: 600, textTransform: "uppercase", whiteSpace: "nowrap" }}>{h}</th>
                         )}
                       </tr></thead>
                       <tbody>
-                        {idea.trades.map((t, ti) => (
-                          <tr key={ti} style={{ borderBottom: `1px solid ${C.border}` }}>
-                            <td style={{ padding: "5px 10px", ...s.mono, fontSize: 10 }}>{t.closeTime.toLocaleTimeString("en-GB")}</td>
-                            <td style={{ padding: "5px 10px", fontSize: 10 }}>{t.isBuy ? "BUY" : "SELL"}</td>
-                            <td style={{ padding: "5px 10px", textAlign: "right", ...s.mono, fontSize: 10 }}>{t.qty.toFixed(2)}</td>
-                            <td style={{ padding: "5px 10px", textAlign: "right", ...s.mono, fontSize: 10 }}>{t.entryPrice.toFixed(2)}</td>
-                            <td style={{ padding: "5px 10px", textAlign: "right", ...s.mono, fontSize: 10 }}>{t.closePrice.toFixed(2)}</td>
-                            <td style={{ padding: "5px 10px", textAlign: "right", ...s.mono, fontSize: 10 }}>{Math.abs(t.entryPrice - t.closePrice).toFixed(1)}</td>
-                            <td style={{ padding: "5px 10px", textAlign: "right", ...s.mono, fontSize: 10, fontWeight: 600, color: t.netPnl >= 0 ? C.green : C.red }}>{fmt$(t.netPnl)}</td>
-                          </tr>
-                        ))}
+                        {idea.trades.map((t, ti) => {
+                          const movePts = Math.abs(t.entryPrice - t.closePrice);
+                          const tradeRisk = movePts * 100 * t.qty;
+                          const gap = ti > 0 ? (t.closeTime - idea.trades[ti - 1].closeTime) / 1000 : null;
+                          const gapStr = gap !== null ? (gap < 60 ? gap.toFixed(0) + "s" : (gap / 60).toFixed(1) + "m") : "—";
+                          const gapColor = gap !== null && gap <= 60 ? C.red : gap !== null && gap <= 300 ? C.amber : C.textMuted;
+                          const riskColor = tradeRisk > (a.maxRisk || 500) * 0.5 ? C.red : tradeRisk > (a.maxRisk || 500) * 0.3 ? C.amber : C.textDim;
+                          return (
+                            <tr key={ti} style={{ borderBottom: `1px solid ${C.border}` }}>
+                              <td style={{ padding: "6px 10px", color: C.textMuted, ...s.mono, fontSize: 9 }}>{ti + 1}</td>
+                              <td style={{ padding: "6px 10px", ...s.mono, fontSize: 10, whiteSpace: "nowrap" }}>
+                                {t.closeTime.toLocaleDateString("en-GB", { month: "short", day: "numeric" })}{" "}
+                                <b>{t.closeTime.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</b>
+                              </td>
+                              <td style={{ padding: "6px 10px" }}>
+                                <span style={{ padding: "1px 5px", borderRadius: 3, fontSize: 9, fontWeight: 700, background: t.isBuy ? C.greenBg : C.redBg, color: t.isBuy ? C.green : C.red }}>{t.isBuy ? "BUY" : "SELL"}</span>
+                              </td>
+                              <td style={{ padding: "6px 10px", textAlign: "right", ...s.mono, fontSize: 10, fontWeight: 600 }}>{t.qty.toFixed(2)}</td>
+                              <td style={{ padding: "6px 10px", textAlign: "right", ...s.mono, fontSize: 10 }}>{t.entryPrice.toFixed(2)}</td>
+                              <td style={{ padding: "6px 10px", textAlign: "right", ...s.mono, fontSize: 10 }}>{t.closePrice.toFixed(2)}</td>
+                              <td style={{ padding: "6px 10px", textAlign: "right", ...s.mono, fontSize: 10 }}>{movePts.toFixed(1)}</td>
+                              <td style={{ padding: "6px 10px", textAlign: "right", ...s.mono, fontSize: 10, color: riskColor, fontWeight: 600 }}>{fmt$(tradeRisk)}</td>
+                              <td style={{ padding: "6px 10px", textAlign: "right", ...s.mono, fontSize: 10, fontWeight: 600, color: t.netPnl >= 0 ? C.green : C.red }}>{fmt$(t.netPnl)}</td>
+                              <td style={{ padding: "6px 10px", ...s.mono, fontSize: 9, color: gapColor, fontWeight: gap !== null && gap <= 60 ? 700 : 400 }}>{gapStr}</td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
+                      <tfoot><tr style={{ borderTop: `2px solid ${C.border}`, background: C.bg }}>
+                        <td colSpan={3} style={{ padding: "8px 10px", fontWeight: 700, fontSize: 11 }}>TOTAL</td>
+                        <td style={{ padding: "8px 10px", textAlign: "right", ...s.mono, fontSize: 11, fontWeight: 700 }}>{idea.lots.toFixed(2)}</td>
+                        <td colSpan={2} />
+                        <td style={{ padding: "8px 10px", textAlign: "right", ...s.mono, fontSize: 11, fontWeight: 700 }}>{Math.abs(idea.maxAdverse).toFixed(1)}</td>
+                        <td style={{ padding: "8px 10px", textAlign: "right", ...s.mono, fontSize: 11, fontWeight: 700, color: idea.simRisk > (a.maxRisk || 500) ? C.red : C.amber }}>{fmt$(idea.simRisk)}</td>
+                        <td style={{ padding: "8px 10px", textAlign: "right", ...s.mono, fontSize: 11, fontWeight: 700, color: idea.pnl >= 0 ? C.green : C.red }}>{fmt$(idea.pnl)}</td>
+                        <td />
+                      </tr></tfoot>
                     </table>
                   </div>
                 </div>

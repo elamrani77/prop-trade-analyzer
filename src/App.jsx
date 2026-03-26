@@ -92,17 +92,17 @@ function detectBrokerAndParse(data, headers) {
   const h = headers.map(x => String(x).toLowerCase().trim());
 
   // — cTrader (FR) —
-  if (h.some(x => x.includes("sens d'ouverture") || x.includes("heure de clôture"))) {
+  if (h.some(x => x.includes("sens d'ouverture") || x.includes("heure de cl") || x.includes("heure de clo"))) {
     return { broker: "cTrader", trades: data.map(r => parseTrade(r, {
-      closeTime: findCol(headers, ["Heure de clôture", "heure de clôture"]),
-      netPnl: findCol(headers, ["$ nets", "$ Nets"]),
-      balance: findCol(headers, ["Solde $", "solde $"]),
-      symbol: findCol(headers, ["Symbole", "symbole"]),
-      direction: findCol(headers, ["Sens d'ouverture"]),
-      entry: findCol(headers, ["Cours d'entrée"]),
-      close: findCol(headers, ["Price de clôture"]),
-      qty: findCol(headers, ["Quantité de clôture"]),
-      volume: findCol(headers, ["Volume de clôture"]),
+      closeTime: findCol(headers, ["Heure de clôture", "heure de clôture", /heure.*cl/i]),
+      netPnl: findCol(headers, ["$ nets", "$ Nets", /net/i]),
+      balance: findCol(headers, ["Solde $", "solde $", /solde/i]),
+      symbol: findCol(headers, ["Symbole", "symbole", /symb/i]),
+      direction: findCol(headers, ["Sens d'ouverture", /sens.*ouverture/i, /sens/i]),
+      entry: findCol(headers, ["Cours d'entrée", /cours.*entr/i, /entr/i]),
+      close: findCol(headers, ["Price de clôture", /price.*cl/i, /prix.*cl/i]),
+      qty: findCol(headers, ["Quantité de clôture", /quantit/i, /qt/i]),
+      volume: findCol(headers, ["Volume de clôture", /volume.*cl/i, /volume/i]),
       buyWords: ["acheter"],
     })).filter(Boolean) };
   }
@@ -204,14 +204,21 @@ function parseTrade(row, cols) {
   if (cols.swapCol && row[cols.swapCol]) pnl += parseFloat(row[cols.swapCol]) || 0;
   if (cols.commCol && row[cols.commCol]) pnl += parseFloat(row[cols.commCol]) || 0;
   const dir = String(row[cols.direction] || "").toLowerCase();
+  let qty = parseFloat(String(row[cols.qty] || 0).replace(/[^0-9.]/g, "")) || 0;
+  const vol = cols.volume ? parseFloat(row[cols.volume]) || 0 : 0;
+  // Fallback: if qty is 0 but volume exists, derive qty from volume
+  // cTrader volume 5 = 0.05 standard lots, volume 10 = 0.10 lots
+  if (qty === 0 && vol > 0) qty = vol / 100;
+  // Safety: if qty looks like volume (e.g. 5 instead of 0.05), normalize
+  if (qty >= 1 && vol > 0 && Math.abs(qty - vol) < 0.01) qty = vol / 100;
   return {
     symbol: String(row[cols.symbol] || "Unknown"),
     direction: dir,
     closeTime: dt,
     entryPrice: parseFloat(row[cols.entry]) || 0,
     closePrice: parseFloat(row[cols.close]) || 0,
-    qty: parseFloat(String(row[cols.qty] || 0).replace(/[^0-9.]/g, "")) || 0,
-    volume: cols.volume ? parseFloat(row[cols.volume]) || 0 : 0,
+    qty,
+    volume: vol,
     netPnl: pnl,
     balance: parseFloat(String(row[cols.balance] || 0).replace(/[^0-9.]/g, "")) || 0,
     tradingDay: getTradingDay(dt),
@@ -857,10 +864,14 @@ export default function App() {
           {/* HFT Clusters */}
           {a.hftClusters.filter(c => c.length >= 3).length > 0 && <>
             <div style={{ fontSize: 15, fontWeight: 700, margin: "20px 0 6px" }}>⚡ Rapid Close Clusters (3+ trades within 60s)</div>
+            <div style={{ fontSize: 11, color: C.textDim, marginBottom: 10, lineHeight: 1.5 }}>
+              IF defines HFT as trades held for <b style={{ color: C.text }}>60 seconds or less</b>. Below are clusters where multiple trades closed within 1 minute of each other.
+              <b style={{ color: C.amber }}>"Simultaneous"</b> means all trades hit the same TP/SL at the exact same moment — they may have been <i>opened</i> at different times but <i>closed</i> together. We only have close times, not open times.
+            </div>
             <div style={{ ...s.card, padding: 0, overflow: "hidden" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
                 <thead><tr style={{ borderBottom: `1px solid ${C.border}` }}>
-                  {["Time", "Trades", "Duration", "P&L"].map(h =>
+                  {["Time", "Trades", "Closes within", "Total lots", "P&L"].map(h =>
                     <th key={h} style={{ padding: "8px 10px", textAlign: h === "Time" ? "left" : "right", color: C.textDim, fontSize: 9, fontWeight: 700, textTransform: "uppercase" }}>{h}</th>
                   )}
                 </tr></thead>
@@ -868,11 +879,14 @@ export default function App() {
                   {a.hftClusters.filter(c => c.length >= 3).map((cluster, ci) => {
                     const clTrades = cluster.map(i => trades[i]);
                     const pnl = clTrades.reduce((s, t) => s + t.netPnl, 0);
+                    const lots = clTrades.reduce((s, t) => s + t.qty, 0);
                     const dur = (clTrades[clTrades.length-1].closeTime - clTrades[0].closeTime) / 1000;
+                    const durLabel = dur < 1 ? "Simultaneous" : dur < 60 ? dur.toFixed(0) + "s" : (dur/60).toFixed(1) + "m";
                     return <tr key={ci} style={{ borderBottom: `1px solid ${C.border}` }}>
                       <td style={{ padding: "6px 10px", ...s.mono, fontSize: 10 }}>{clTrades[0].closeTime.toLocaleString("en-GB", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" })}</td>
                       <td style={{ padding: "6px 10px", textAlign: "right", ...s.mono, fontWeight: 600 }}>{cluster.length}</td>
-                      <td style={{ padding: "6px 10px", textAlign: "right", ...s.mono }}>{dur.toFixed(0)}s</td>
+                      <td style={{ padding: "6px 10px", textAlign: "right", ...s.mono, color: dur < 1 ? C.amber : C.textDim }}>{durLabel}</td>
+                      <td style={{ padding: "6px 10px", textAlign: "right", ...s.mono }}>{lots.toFixed(2)}</td>
                       <td style={{ padding: "6px 10px", textAlign: "right", ...s.mono, fontWeight: 600, color: pnl >= 0 ? C.green : C.red }}>{fmt$(pnl)}</td>
                     </tr>;
                   })}
@@ -880,6 +894,37 @@ export default function App() {
               </table>
             </div>
           </>}
+
+          {/* IF Rules Reference */}
+          <div style={{ fontSize: 15, fontWeight: 700, margin: "20px 0 6px" }}>📖 IF Micro Rules Reference</div>
+          <div style={{ ...s.card, padding: 0, overflow: "hidden" }}>
+            {[
+              { rule: "Daily Drawdown", value: "4% of balance", detail: "Recalculated at 17:00 EST based on higher of balance or equity. Breaching = account closed.", link: "https://instantfunding.com/help/if-micro/", color: C.amber },
+              { rule: "Static Drawdown", value: "6% of starting balance", detail: "Account equity can never drop below 94% of starting balance. Hard breach.", link: "https://instantfunding.com/help/if-micro/", color: C.red },
+              { rule: "Max Risk Per Trade Idea", value: "1% of starting balance", detail: "Risk = Entry→SL distance × lots × 100. All positions same instrument + same direction + closed within 10 min = ONE idea. Hard breach.", link: "https://instantfunding.com/trading-rules/", color: C.red },
+              { rule: "HFT (High-Frequency Trading)", value: "Trades held ≤60s prohibited", detail: "Unusually high number of trades per hour also flagged. Account subject to review.", link: "https://instantfunding.com/help/is-high-frequency-trading-hft-allowed/", color: C.amber },
+              { rule: "News Trading", value: "Allowed on IF Micro", detail: "4-minute restriction does NOT apply to IF Micro accounts.", link: "https://instantfunding.com/help/is-news-trading-allowed/", color: C.green },
+              { rule: "Weekend Holding", value: "Allowed on IF Micro", detail: "Positions can be held over weekends.", link: "https://instantfunding.com/trading-rules/", color: C.green },
+              { rule: "Martingale", value: "Allowed on IF Micro", detail: "Can add to losing positions but avoid continuously doubling lot sizes.", link: "https://instantfunding.com/help/do-we-allow-martingale/", color: C.green },
+              { rule: "Profit Split", value: "80% (90% with add-on)", detail: "On-demand payouts available. Minimum $25 withdrawal.", link: "https://instantfunding.com/help/if-micro/", color: C.blue },
+              { rule: "Scaling", value: "+25% every 90 days", detail: "Requires 10% gain and 90+ days. Max 2× starting balance. Contact support to scale.", link: "https://instantfunding.com/trading-rules/", color: C.blue },
+              { rule: "Inactivity", value: "60-day limit", detail: "No trades within 60 days = account closed.", link: "https://instantfunding.com/trading-rules/", color: C.amber },
+              { rule: "Overleveraging", value: "Must stay within lot limits", detail: "Max lot sizes vary by account size and asset. Check FAQ for detailed limits.", link: "https://instantfunding.com/help/maximum-lot-sizes/", color: C.amber },
+              { rule: "Prohibited Strategies", value: "Grid, one-sided bets, public EAs", detail: "Also prohibited: reverse trading, group hedging, account churning, exploiting glitches.", link: "https://instantfunding.com/trading-rules/", color: C.red },
+            ].map((r, i) => (
+              <div key={i} style={{ padding: "10px 14px", borderBottom: `1px solid ${C.border}`, display: "flex", gap: 10, alignItems: "flex-start" }}>
+                <div style={{ width: 4, minHeight: 32, borderRadius: 2, background: r.color, flexShrink: 0, marginTop: 2 }} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 13, fontWeight: 700 }}>{r.rule}</span>
+                    <span style={{ fontSize: 11, ...s.mono, color: r.color, fontWeight: 600, flexShrink: 0 }}>{r.value}</span>
+                  </div>
+                  <div style={{ fontSize: 11, color: C.textDim, marginTop: 2, lineHeight: 1.4 }}>{r.detail}</div>
+                  <a href={r.link} target="_blank" rel="noopener noreferrer" style={{ fontSize: 10, color: C.blue, textDecoration: "none", marginTop: 3, display: "inline-block" }}>View on IF →</a>
+                </div>
+              </div>
+            ))}
+          </div>
 
           {/* Symbol breakdown */}
           <div style={{ fontSize: 15, fontWeight: 700, margin: "20px 0 6px" }}>📋 By Symbol</div>

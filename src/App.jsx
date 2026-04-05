@@ -43,6 +43,16 @@ const FIRMS = {
       ts_150k: { name: "150K Combine", bestDayPct: 50, minProfitPct: null, dailyDD: null, staticDD: null, trailingDD: 4500, riskPerTrade: null, profitSplit: 90, hasOnDemand: false, riskType: null, profitTarget: 9000 },
     }
   },
+  blue_guardian: {
+    name: "Blue Guardian",
+    accounts: {
+      bg_instant_5k: { name: "BG Instant 5K", bestDayPct: 20, minProfitPct: null, dailyDD: 3, staticDD: null, trailingDD: 6, trailLockPct: 6, guardianShield: 1, riskPerTrade: null, profitSplit: 80, hasOnDemand: false, riskType: null, gamblingMargin: 80, minHoldSec: 120, newsRestricted: true },
+      bg_instant_10k: { name: "BG Instant 10K", bestDayPct: 20, minProfitPct: null, dailyDD: 3, staticDD: null, trailingDD: 6, trailLockPct: 6, guardianShield: 1, riskPerTrade: null, profitSplit: 80, hasOnDemand: false, riskType: null, gamblingMargin: 80, minHoldSec: 120, newsRestricted: true },
+      bg_instant_25k: { name: "BG Instant 25K", bestDayPct: 20, minProfitPct: null, dailyDD: 3, staticDD: null, trailingDD: 6, trailLockPct: 6, guardianShield: 1, riskPerTrade: null, profitSplit: 80, hasOnDemand: false, riskType: null, gamblingMargin: 80, minHoldSec: 120, newsRestricted: true },
+      bg_instant_50k: { name: "BG Instant 50K", bestDayPct: 20, minProfitPct: null, dailyDD: 3, staticDD: null, trailingDD: 6, trailLockPct: 6, guardianShield: 1, riskPerTrade: null, profitSplit: 80, hasOnDemand: false, riskType: null, gamblingMargin: 80, minHoldSec: 120, newsRestricted: true },
+      bg_instant_100k: { name: "BG Instant 100K", bestDayPct: 20, minProfitPct: null, dailyDD: 3, staticDD: null, trailingDD: 6, trailLockPct: 6, guardianShield: 1, riskPerTrade: null, profitSplit: 80, hasOnDemand: false, riskType: null, gamblingMargin: 80, minHoldSec: 120, newsRestricted: true },
+    }
+  },
   custom: {
     name: "Custom / Other",
     accounts: {
@@ -298,8 +308,8 @@ function ChartTip({ active, payload, label }) {
 export default function App() {
   const [trades, setTrades] = useState([]);
   const [broker, setBroker] = useState("");
-  const [firmId, setFirmId] = useState("instant_funding");
-  const [accountId, setAccountId] = useState("if_micro");
+  const [firmId, setFirmId] = useState("blue_guardian");
+  const [accountId, setAccountId] = useState("bg_instant_50k");
   const [startBalance, setStartBalance] = useState(50000);
   const [tab, setTab] = useState("overview");
   const [dragOver, setDragOver] = useState(false);
@@ -479,11 +489,70 @@ export default function App() {
     const avgLoss = losers.length ? Math.abs(losers.reduce((s, t) => s + t.netPnl, 0) / losers.length) : 0;
     const rr = avgLoss > 0 ? avgWin / avgLoss : 0;
 
-    const ddPct = account.staticDD || account.smartDD || 10;
+    const ddPct = account.staticDD || account.trailingDD || account.smartDD || 10;
     const ddFloor = startBalance * (1 - ddPct / 100);
     const currentBal = trades.length ? trades[trades.length - 1].balance : startBalance;
     const avgDailyNet = days.length ? totalPnl / days.length : 0;
     const daysToTarget = avgDailyNet > 0 && shortfall > 0 ? Math.ceil(shortfall / avgDailyNet) : null;
+
+    // ── TRAILING DD SIMULATION ──
+    let trailHWM = startBalance;
+    let trailFloor = account.trailingDD ? startBalance * (1 - account.trailingDD / 100) : ddFloor;
+    let trailLocked = false;
+    const trailLockTarget = account.trailLockPct ? startBalance * (1 + account.trailLockPct / 100) : null;
+    let trailMinRoom = Infinity;
+    let trailBreachDay = null;
+    const trailDaily = [];
+    let runBal = startBalance;
+    days.forEach(d => {
+      runBal += d.net;
+      if (runBal > trailHWM) {
+        trailHWM = runBal;
+        if (!trailLocked && account.trailingDD) trailFloor = trailHWM * (1 - account.trailingDD / 100);
+      }
+      if (trailLockTarget && trailHWM >= trailLockTarget && !trailLocked) {
+        trailLocked = true;
+        trailFloor = startBalance;
+      }
+      const room = runBal - trailFloor;
+      if (room < trailMinRoom) trailMinRoom = room;
+      if (room <= 0 && !trailBreachDay) trailBreachDay = d.date;
+      trailDaily.push({ date: d.date, balance: runBal, hwm: trailHWM, floor: trailFloor, room, locked: trailLocked });
+    });
+
+    // ── GUARDIAN SHIELD SIMULATION ──
+    const shieldPct = account.guardianShield || null;
+    const shieldLimit = shieldPct ? startBalance * (shieldPct / 100) : null;
+    let shieldTriggers = 0;
+    const shieldEvents = [];
+    if (shieldLimit) {
+      tradeIdeas.forEach(idea => {
+        const maxFloat = idea.trades.reduce((s, t) => {
+          const movePts = Math.abs(t.entryPrice - t.closePrice);
+          return s + movePts * 100 * t.qty;
+        }, 0);
+        if (idea.pnl < 0 && Math.abs(idea.pnl) >= shieldLimit * 0.8) {
+          shieldEvents.push({ date: idea.date, loss: idea.pnl, lots: idea.lots, n: idea.n, risk: "near" });
+        }
+        if (idea.pnl < 0 && Math.abs(idea.pnl) >= shieldLimit) {
+          shieldTriggers++;
+          shieldEvents.push({ date: idea.date, loss: idea.pnl, lots: idea.lots, n: idea.n, risk: "trigger" });
+        }
+      });
+    }
+
+    // ── MIN HOLD TIME CHECK ──
+    const minHoldSec = account.minHoldSec || 0;
+    let shortHoldCount = 0;
+    if (minHoldSec > 0) {
+      for (let i = 1; i < trades.length; i++) {
+        const gap = (trades[i].closeTime - trades[i-1].closeTime) / 1000;
+        if (gap >= 0 && gap < minHoldSec) shortHoldCount++;
+      }
+    }
+
+    // ── GAMBLING MARGIN CHECK ──
+    const gamblingMargin = account.gamblingMargin || null;
 
     return {
       totalPnl, days, bestDay, bestDayNet, worstDay, consistencyPct,
@@ -491,6 +560,9 @@ export default function App() {
       riskViolations, symbols, winners, losers, avgWin, avgLoss, rr,
       ddFloor, ddPct, currentBal, avgDailyNet, daysToTarget,
       tradeIdeas, hftClusters, hftTradeCount, sameSecCount,
+      trailDaily, trailMinRoom, trailBreachDay, trailLocked,
+      shieldLimit, shieldTriggers, shieldEvents,
+      shortHoldCount, minHoldSec, gamblingMargin,
     };
   }, [trades, account, startBalance]);
 
@@ -716,10 +788,14 @@ export default function App() {
 
           {/* Rule checks summary */}
           {[
-            { label: `Static Drawdown (${a.ddPct}%)`, pass: a.currentBal > a.ddFloor && Math.min(...a.equity.map(e => e.balance)) >= a.ddFloor, detail: `Lowest: ${fmt$(Math.min(...a.equity.map(e => e.balance)))} / Floor: ${fmt$(a.ddFloor)}` },
+            account.trailingDD ? { label: `Trailing Drawdown (${account.trailingDD}%)`, pass: !a.trailBreachDay, detail: `Min room: ${fmt$(a.trailMinRoom)} / Floor: ${fmt$(a.trailDaily.length ? a.trailDaily[a.trailDaily.length-1].floor : a.ddFloor)}${a.trailLocked ? " 🔒 LOCKED" : ` — locks at ${fmt$(startBalance * (1 + (account.trailLockPct||6)/100))}`}`, warn: a.trailMinRoom < startBalance * 0.01 } : { label: `Static Drawdown (${a.ddPct}%)`, pass: a.currentBal > a.ddFloor && Math.min(...a.equity.map(e => e.balance)) >= a.ddFloor, detail: `Lowest: ${fmt$(Math.min(...a.equity.map(e => e.balance)))} / Floor: ${fmt$(a.ddFloor)}` },
             account.dailyDD && { label: `Daily Drawdown (${account.dailyDD}%)`, pass: !a.days.some(d => d.net < -(startBalance * account.dailyDD / 100)), detail: `Worst day: ${fmt$(Math.min(...a.days.map(d => d.net)))} / Limit: ${fmt$(startBalance * account.dailyDD / 100 * -1)}` },
+            account.guardianShield && { label: `Guardian Shield (${account.guardianShield}% floating)`, pass: a.shieldTriggers === 0, detail: `Limit: ${fmt$(a.shieldLimit)} floating loss. ${a.shieldEvents.length} near/trigger events. ${a.shieldTriggers > 0 ? "1st breach → split 50%. 2nd → account closed." : "No triggers detected."}`, warn: a.shieldEvents.some(e => e.risk === "near") && a.shieldTriggers === 0 },
+            account.bestDayPct && { label: `Consistency Rule (${account.bestDayPct}% best day)`, pass: a.consistencyPct != null && a.consistencyPct < account.bestDayPct, detail: `Best day: ${fmt$(a.bestDayNet)} = ${a.consistencyPct != null ? a.consistencyPct.toFixed(1) : "N/A"}% of total. ${a.consistencyPct != null && a.consistencyPct >= account.bestDayPct ? `Need ${fmt$(a.bestDayNet / (account.bestDayPct/100))} total to withdraw.` : "Can withdraw ✅"}`, warn: a.consistencyPct != null && a.consistencyPct >= account.bestDayPct * 0.8 && a.consistencyPct < account.bestDayPct },
             a.maxRisk && { label: `1% Trade Idea Rule`, pass: !a.tradeIdeas.some(i => i.status === "breach"), detail: `${a.tradeIdeas.filter(i => i.status !== "safe").length} flagged ideas, ${a.tradeIdeas.filter(i => i.status === "breach" || i.status === "breach-zone").length} in breach zone`, warn: a.tradeIdeas.some(i => i.status !== "safe" && i.status !== "breach") },
             { label: "HFT Pattern", pass: a.hftTradeCount / trades.length < 0.3, detail: `${a.hftTradeCount}/${trades.length} trades (${(a.hftTradeCount/trades.length*100).toFixed(0)}%) in rapid clusters, ${a.sameSecCount} same-second`, warn: a.hftTradeCount / trades.length >= 0.3 && a.hftTradeCount / trades.length < 0.5 },
+            a.minHoldSec > 0 && { label: `Min Hold Time (${a.minHoldSec}s)`, pass: a.shortHoldCount === 0, detail: `${a.shortHoldCount} trades closed under ${a.minHoldSec}s — flagged as tick scalping`, warn: a.shortHoldCount > 0 && a.shortHoldCount <= 3 },
+            account.newsRestricted && { label: "News Trading", pass: true, detail: "No open/close within 5min of high-impact news on funded accounts. Profits removed, no breach.", warn: true },
           ].filter(Boolean).map((r, i) => (
             <div key={i} style={{ ...s.card, display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 8, ...((!r.pass && !r.warn) && { borderColor: "rgba(239,68,68,0.3)" }), ...(r.warn && { borderColor: "rgba(245,158,11,0.3)" }) }}>
               <span style={{ display: "inline-flex", padding: "3px 8px", borderRadius: 12, fontSize: 10, fontWeight: 700, flexShrink: 0, background: r.pass ? C.greenBg : r.warn ? C.amberBg : C.redBg, color: r.pass ? C.green : r.warn ? C.amber : C.red, border: `1px solid ${r.pass ? C.greenDim : r.warn ? C.amberDim : C.redDim}` }}>
@@ -895,7 +971,93 @@ export default function App() {
             </div>
           </>}
 
+          {/* Trailing DD Chart */}
+          {account.trailingDD && a.trailDaily.length > 0 && <div style={{ ...s.card, marginBottom: 14 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>📉 Trailing Drawdown Simulation</div>
+            <div style={{ fontSize: 11, color: C.textDim, marginBottom: 10 }}>{a.trailLocked ? "🔒 Trailing locked at starting balance — now static!" : `Locks at ${fmt$(startBalance * (1 + (account.trailLockPct||6)/100))} (+${account.trailLockPct||6}%)`}</div>
+            <ResponsiveContainer width="100%" height={200}>
+              <LineChart data={a.trailDaily}>
+                <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
+                <XAxis dataKey="date" tick={{ fill: C.textDim, fontSize: 9 }} stroke={C.border} />
+                <YAxis domain={["auto", "auto"]} tickFormatter={v => "$" + (v/1000).toFixed(1) + "k"} tick={{ fill: C.textDim, fontSize: 10 }} stroke={C.border} width={52} />
+                <Tooltip content={({ active, payload }) => {
+                  if (!active || !payload?.length) return null;
+                  const d = payload[0]?.payload;
+                  return <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 12px", fontSize: 11 }}>
+                    <div style={{ fontWeight: 700, marginBottom: 4 }}>{d.date}</div>
+                    <div>Balance: <b>{fmt$(d.balance)}</b></div>
+                    <div>HWM: {fmt$(d.hwm)}</div>
+                    <div>Trail Floor: <span style={{ color: C.red }}>{fmt$(d.floor)}</span></div>
+                    <div>Room: <span style={{ color: d.room < startBalance * 0.01 ? C.red : d.room < startBalance * 0.02 ? C.amber : C.green, fontWeight: 700 }}>{fmt$(d.room)}</span></div>
+                    {d.locked && <div style={{ color: C.green, fontWeight: 700 }}>🔒 LOCKED</div>}
+                  </div>;
+                }} />
+                <Line type="monotone" dataKey="balance" stroke={C.blue} strokeWidth={2} dot={false} name="Balance" />
+                <Line type="monotone" dataKey="floor" stroke={C.red} strokeWidth={1.5} strokeDasharray="4 4" dot={false} name="Trail Floor" />
+                <Line type="monotone" dataKey="hwm" stroke={C.amber} strokeWidth={1} strokeDasharray="2 4" dot={false} name="High Water Mark" />
+                <ReferenceLine y={startBalance} stroke={C.textMuted} strokeDasharray="4 4" />
+              </LineChart>
+            </ResponsiveContainer>
+            <div style={{ display: "flex", gap: 16, justifyContent: "center", marginTop: 6, fontSize: 10 }}>
+              <span><span style={{ color: C.blue }}>━</span> Balance</span>
+              <span><span style={{ color: C.red }}>╌</span> Trail Floor</span>
+              <span><span style={{ color: C.amber }}>╌</span> HWM</span>
+            </div>
+          </div>}
+
+          {/* Guardian Shield Events */}
+          {a.shieldLimit && a.shieldEvents.length > 0 && <>
+            <div style={{ fontSize: 15, fontWeight: 700, margin: "20px 0 6px" }}>🛡️ Guardian Shield Events</div>
+            <div style={{ fontSize: 11, color: C.textDim, marginBottom: 10 }}>Trades where floating loss approached or hit the {fmt$(a.shieldLimit)} Shield limit. 1st trigger → split drops to 50%. 2nd → account closed.</div>
+            {a.shieldEvents.map((e, i) => (
+              <div key={i} style={{ ...s.card, marginBottom: 6, display: "flex", alignItems: "center", gap: 10, ...(e.risk === "trigger" && { borderColor: "rgba(239,68,68,0.3)" }) }}>
+                <span style={{ padding: "2px 8px", borderRadius: 8, fontSize: 9, fontWeight: 700, background: e.risk === "trigger" ? C.redBg : C.amberBg, color: e.risk === "trigger" ? C.red : C.amber }}>{e.risk === "trigger" ? "TRIGGERED" : "NEAR"}</span>
+                <span style={{ fontSize: 11, ...s.mono }}>{new Date(e.date).toLocaleDateString("en-GB", { month: "short", day: "numeric" })} {new Date(e.date).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}</span>
+                <span style={{ fontSize: 11, ...s.mono, color: C.red }}>{fmt$(e.loss)}</span>
+                <span style={{ fontSize: 10, color: C.textDim }}>{e.n} trades, {e.lots.toFixed(2)} lots</span>
+              </div>
+            ))}
+          </>}
+
+          {/* Rules Reference — Dynamic based on selected firm */}
+          {firmId === "blue_guardian" && <>
+            <div style={{ fontSize: 15, fontWeight: 700, margin: "20px 0 6px" }}>📖 Blue Guardian Instant Rules</div>
+            <div style={{ ...s.card, padding: 0, overflow: "hidden" }}>
+              {[
+                { rule: "Daily Drawdown", value: `3% (${fmt$(startBalance * 0.03)})`, detail: "Recalculated at 5PM EST. Based on higher of balance or equity. Hard breach = account closed.", link: "https://www.blueguardian.com/faqs", color: C.amber },
+                { rule: "Trailing Drawdown", value: `6% (${fmt$(startBalance * 0.06)})`, detail: `Trails your highest balance. Locks static at +6% profit (${fmt$(startBalance * 1.06)}). After lock, 1% buffer required.`, link: "https://www.blueguardian.com/faqs", color: C.red },
+                { rule: "Guardian Shield", value: `1% floating (${fmt$(startBalance * 0.01)})`, detail: "Auto-closes ALL open trades if floating PnL hits -1%. Soft breach: 1st → split 50%, 2nd → account closed.", link: "https://www.blueguardian.com/faqs", color: C.red },
+                { rule: "Consistency Rule", value: "20% best day", detail: "No single day can be ≥20% of total profit. Won't breach account, but blocks payout until diluted.", link: "https://www.blueguardian.com/faqs", color: C.amber },
+                { rule: "Min Hold Time", value: "2 minutes", detail: "Trades closed under 2 minutes flagged as tick scalping. May result in account termination.", link: "https://www.blueguardian.com/faqs", color: C.amber },
+                { rule: "News Trading", value: "NOT allowed (funded)", detail: "No open/close 5min before/after high-impact news. Profits removed, no breach. FOMC also restricted.", link: "https://www.blueguardian.com/faqs", color: C.red },
+                { rule: "Hedging", value: "Allowed ✅", detail: "Within same account. No restriction on same-symbol hedging.", link: "https://www.blueguardian.com/faqs", color: C.green },
+                { rule: "Martingale", value: "Allowed ✅", detail: "Can increase lot sizes. But be careful with Guardian Shield limit.", link: "https://www.blueguardian.com/faqs", color: C.green },
+                { rule: "Gambling Rule", value: "Margin >80% = violation", detail: "Any trade using >80% of available margin is considered gambling. At 0.05 lots on $50K = ~2.25% margin. Safe.", link: "https://www.blueguardian.com/faqs", color: C.amber },
+                { rule: "Weekend Holding", value: "Allowed ✅", detail: "No restrictions on overnight or weekend positions.", link: "https://www.blueguardian.com/faqs", color: C.green },
+                { rule: "Profit Split", value: "80% (90% add-on)", detail: "Standard 80%. 90% with paid add-on. Drops to 50% after 1st Shield breach.", link: "https://www.blueguardian.com/faqs", color: C.blue },
+                { rule: "Payout", value: "Every 14 days, 24hr guarantee", detail: "Min 5 profitable days with 0.5% each. Min withdrawal $100. 24hr guarantee or 100% split.", link: "https://www.blueguardian.com/faqs", color: C.blue },
+                { rule: "Scaling", value: "+25% every 3 months", detail: "Need 12% profit in 3 months. Max allocation $4M across merged accounts.", link: "https://www.blueguardian.com/faqs", color: C.blue },
+                { rule: "Copy/Signal Trading", value: "VPN bypass prohibited ❌", detail: "EAs and trade copiers allowed. But using VPN/VPS to bypass copy/group/signal trading rules = termination.", link: "https://www.blueguardian.com/faqs", color: C.red },
+                { rule: "Inactivity", value: "30-day limit", detail: "Must place at least 1 trade every 30 days from account creation.", link: "https://www.blueguardian.com/faqs", color: C.amber },
+                { rule: "Leverage", value: "Fx 1:30, Commodities 1:10", detail: "Gold/commodities at 1:10 leverage. 200K instant accounts get 1:15 on FX.", link: "https://www.blueguardian.com/faqs", color: C.blue },
+              ].map((r, i) => (
+                <div key={i} style={{ padding: "10px 14px", borderBottom: `1px solid ${C.border}`, display: "flex", gap: 10, alignItems: "flex-start" }}>
+                  <div style={{ width: 4, minHeight: 32, borderRadius: 2, background: r.color, flexShrink: 0, marginTop: 2 }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 13, fontWeight: 700 }}>{r.rule}</span>
+                      <span style={{ fontSize: 11, ...s.mono, color: r.color, fontWeight: 600, flexShrink: 0 }}>{r.value}</span>
+                    </div>
+                    <div style={{ fontSize: 11, color: C.textDim, marginTop: 2, lineHeight: 1.4 }}>{r.detail}</div>
+                    <a href={r.link} target="_blank" rel="noopener noreferrer" style={{ fontSize: 10, color: C.blue, textDecoration: "none", marginTop: 3, display: "inline-block" }}>View on BG →</a>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>}
+
           {/* IF Rules Reference */}
+          {firmId === "instant_funding" && <>
           <div style={{ fontSize: 15, fontWeight: 700, margin: "20px 0 6px" }}>📖 IF Micro Rules Reference</div>
           <div style={{ ...s.card, padding: 0, overflow: "hidden" }}>
             {[
@@ -925,6 +1087,7 @@ export default function App() {
               </div>
             ))}
           </div>
+          </>}
 
           {/* Symbol breakdown */}
           <div style={{ fontSize: 15, fontWeight: 700, margin: "20px 0 6px" }}>📋 By Symbol</div>
